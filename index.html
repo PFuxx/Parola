@@ -620,6 +620,22 @@
         };
       }
 
+      // ★ MOD: segédfüggvény a Pap „most nyerne?” ellenőrzéséhez (Rabló előtt kell)
+      function priestWouldWin(adj, excluded) { // ★ MOD
+        const priest = findByBase('Pap');      // ★ MOD
+        if (!priest || excluded.has(priest.id)) return false; // ★ MOD
+        const comps = getComponents(adj);      // ★ MOD
+        const cycles = comps.filter(comp =>    // ★ MOD
+          comp.length >= 3 && comp.every(id => (adj.get(id) || new Set()).size === 2)
+        );                                     // ★ MOD
+        let maxSize = 0, countMax = 0, priestInMax = false; // ★ MOD
+        cycles.forEach(comp => {               // ★ MOD
+          if (comp.length > maxSize) { maxSize = comp.length; countMax = 1; priestInMax = comp.includes(priest.id); }
+          else if (comp.length === maxSize) { countMax++; if (comp.includes(priest.id)) priestInMax = true; }
+        });                                     // ★ MOD
+        return (maxSize > 0 && countMax === 1 && priestInMax); // ★ MOD
+      }                                         // ★ MOD
+
       function resolveRoundOn(adj, excluded, considerDoctor) {
         const doctor = findByBase('Orvos');
         const plague = findByBase('Pestises');
@@ -771,25 +787,37 @@
           if (nb.length === 2 && isConnected(adj, nb[0], nb[1])) { winners.add(preacher.id); winners.add(nb[0]); winners.add(nb[1]); }
         }
 
-        /* RABLÓ (no-death kivétellel és Lovag immunitással) */
+        /* RABLÓ – ★ MOD: Pap és „megelőzéses” Lovag kezelése is */
         if (robber && isAliveFinal(robber)) {
           const nb = neighbors(adj, robber.id);
 
           const willNoOneDie = deaths.size === 0;
           const robberNoDeathTriggerTargets = [];
           if (willNoOneDie) {
-            if (doctor && isAliveFinal(doctor) && nb.includes(doctor.id)) robberNoDeathTriggerTargets.push(doctor.id);
-            if (knight && isAliveFinal(knight) && nb.includes(knight.id)) robberNoDeathTriggerTargets.push(knight.id);
+            const dOK = doctor && isAliveFinal(doctor) && nb.includes(doctor.id);
+            const kOK = knight && isAliveFinal(knight) && nb.includes(knight.id);
+            if (dOK) robberNoDeathTriggerTargets.push(doctor.id);
+            if (kOK) robberNoDeathTriggerTargets.push(knight.id);
           }
+
+          // ★ MOD: a Pap nyerésének előrejelzése (még a winners-be kerülés előtt)
+          const priestWinsNow = priestWouldWin(adj, excluded) && priest && isAliveFinal(priest); // ★ MOD
 
           const robberTargets = nb.filter(id => {
             const n = idToNode(id); if (!n) return false;
             if (baseName(n.name) === 'Király') return false;
             if (deaths.has(id)) return false;
+            if (baseName(n.name) === 'Pap') {          // ★ MOD
+              return priestWinsNow;                    // ★ MOD
+            }
             return winners.has(id);
           });
 
           const targetsSet = new Set(robberTargets.concat(robberNoDeathTriggerTargets));
+
+          // ★ MOD: ha a Lovag megelőzés miatt nyerne, a Rabló „célpontnak” tekinti → Lovag megakadályozza és megöli a Rablót
+          const knightWouldWinByPrevention = knight && isAliveFinal(knight) && knightPreventedTotal > 0; // ★ MOD
+          if (knightWouldWinByPrevention && nb.includes(knight.id)) targetsSet.add(knight.id);          // ★ MOD
 
           let robberPrevented = false;
           if (knight && isAliveFinal(knight) && isConnected(adj, knight.id, robber.id) && targetsSet.size > 0) {
@@ -816,13 +844,13 @@
         if (knight && isAliveFinal(knight) && knightPreventedTotal > 0) winners.add(knight.id);
         if (knight && isAliveFinal(knight) && knightPreventedTotal === 0 && deaths.size === 0) winners.add(knight.id);
 
-        // Pap – legnagyobb zárt kör
+        // Pap – legnagyobb zárt kör (eredeti helyén marad)
         if (priest && isAliveFinal(priest)) {
           const comps = getComponents(adj);
           const cycles = comps.filter(comp => comp.length >= 3 && comp.every(id => (adj.get(id) || new Set()).size === 2));
           let maxSize = 0, countMax = 0, priestInMax = false;
           cycles.forEach(comp => {
-            if (comp.length > maxSize) { maxSize = comp.length; countMax = 1; priestInMax = comp.includes(priest.id); }
+            if (comp.length > 0 && comp.length > maxSize) { maxSize = comp.length; countMax = 1; priestInMax = comp.includes(priest.id); }
             else if (comp.length === maxSize) { countMax++; if (comp.includes(priest.id)) priestInMax = true; }
           });
           if (maxSize > 0 && countMax === 1 && priestInMax) winners.add(priest.id);
@@ -840,6 +868,34 @@
       const noDoc           = resolveRoundOn(adjWith, excludedWith, false);
       const withDocNoBridge = resolveRoundOn(adjNo,   excludedNo,   true);
 
+      // ★ MOD: segédfüggvény — „nélküle is nyernek a Szektások?” (NO-BRIDGE világon)
+      function sectsAutoWinOn(adj, excluded) {                                 // ★ MOD
+        const sectIds = nodes.filter(n => baseName(n.name) === 'Szektás').map(n => n.id); // ★ MOD
+        if (sectIds.length !== 3) return false;                                 // ★ MOD
+        const comps = getComponents(adj);                                       // ★ MOD
+        const cycles = comps.filter(comp => comp.every(id => (adj.get(id) || new Set()).size === 2)); // ★ MOD
+        const targetCycle = cycles.find(comp => comp.length >= 4 && sectIds.every(id => comp.includes(id))); // ★ MOD
+        if (!targetCycle) return false;                                         // ★ MOD
+        const [s1,s2,s3] = sectIds;                                            // ★ MOD
+        const triples = [[s1,s2,s3],[s2,s3,s1],[s3,s1,s2]];                     // ★ MOD
+        let consecutive = false;                                                // ★ MOD
+        for (const [a,b,c] of triples) {                                        // ★ MOD
+          if (isConnected(adj,a,b) && isConnected(adj,b,c) && !isConnected(adj,a,c)) { consecutive = true; break; } // ★ MOD
+        }                                                                        // ★ MOD
+        if (!consecutive) return false;                                         // ★ MOD
+        // legyen a körben más is (>=4 hosszú ciklust már szűrtük)                // ★ MOD
+        return true;                                                            // ★ MOD
+      }                                                                          // ★ MOD
+
+// --- Tiszta "no-trader" világ a szektások viszonyításához (nem tiltjuk a lezárást) --- // ★ FIX
+let adjNoPure = null, excludedNoPure = null;                                       // ★ FIX
+if (trader) {                                                                      // ★ FIX
+  const edgesNoTrader = edgesClosed.filter(([x,y]) => x !== trader.id && y !== trader.id); // ★ FIX
+  const edgesNoTraderClosed = closeChainEndsOnce(edgesNoTrader);                   // ★ FIX
+  adjNoPure = buildAdj(edgesNoTraderClosed);                                       // ★ FIX
+  excludedNoPure = excludedFromAdj(adjNoPure);                                     // ★ FIX
+}                
+
       let traderWins = false;
       if (traderBridge && !traderBridge.preExisted) {
         const { aId, bId } = traderBridge;
@@ -848,6 +904,17 @@
         const aAliveNo   = !withDocNoBridge.deaths.has(aId) && withDocNoBridge.winners.has(aId);
         const bAliveNo   = !withDocNoBridge.deaths.has(bId) && withDocNoBridge.winners.has(bId);
         if ((aAliveWith && !aAliveNo) || (bAliveWith && !bAliveNo)) traderWins = true;
+
+        // ★ MOD: Szektás–ártatlan híd kivétel: ha híd nélkül is auto-win a Szektások → Kereskedő NE nyerjen
+        const aIsSect = baseName(idToNode(aId)?.name || '') === 'Szektás';     // ★ MOD
+        const bIsSect = baseName(idToNode(bId)?.name || '') === 'Szektás';     // ★ MOD
+        const mixedSectBridge = (aIsSect && !bIsSect) || (!aIsSect && bIsSect); // ★ MOD
+  if (mixedSectBridge) {                                        // ★ FIX
+  const autoWinBaseline = adjNoPure ?                         // ★ FIX
+    sectsAutoWinOn(adjNoPure, excludedNoPure) : false;        // ★ FIX
+  if (autoWinBaseline) traderWins = false;                    // ★ FIX
+}                                                             // ★ FIX
+                                                      // ★ MOD
       }
 
       clearStates();
